@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Segmenter Ayahs</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+
+  <header>
+    <h1>Segmenter Ayahs</h1>
+    <div id="burgerBtn" aria-label="Toggle menu" role="button">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+    <div id="langFilesContainer"></div>
+
+    <div style="margin-top: 8px;">
+      <button id="exportSegOnlyBtn">SEG</button>
+      <button id="exportBackupBtn">Sauvegardée</button>
+    </div>
+
+    <div id="backupContainer">
+      <label for="backupInput" style="font-weight:bold; color:#fff;">Charger sauvegarde:</label>
+      <input type="file" id="backupInput" accept=".json" />
+      <div id="loadedBackupName" style="color:white; margin-top:4px;"></div>
+    </div>
+
+    <div id="status" style="margin-top:8px;"></div>
+  </header>
+
+  <div id="progressBarContainer" style="background: #eee; height: 18px; margin: 8px 10px; border-radius: 12px; overflow: hidden;">
+    <div id="progressBar" style="height: 100%; width: 0%; background: #27ae60; transition: width 0.3s;"></div>
+  </div>
+  <div id="progressText" style="text-align:center; font-weight:bold; color: #27ae60; margin-bottom: 8px;">Chargement...</div>  
+
+  <main>
+    <div id="sidebar"></div>
+    <div id="editor">
+      <h2 id="ayahTitle">Chargement...</h2>
+      <div id="textsContainer"></div>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      const languages = {};
+      const defaultLangs = [
+        { code: 'vo', name: 'Arabe (VO)', file: 'vo.json' },
+        { code: 'tr', name: 'Phonétique (TR)', file: 'tr.json' },
+        { code: 'fr', name: 'Français', file: 'fr.json' }
+      ];
+
+      const sidebar = document.getElementById('sidebar');
+      const textsContainer = document.getElementById('textsContainer');
+      const ayahTitle = document.getElementById('ayahTitle');
+      const status = document.getElementById('status');
+      const backupInput = document.getElementById('backupInput');
+      const exportBackupBtn = document.getElementById('exportBackupBtn');
+      const exportSegOnlyBtn = document.getElementById('exportSegOnlyBtn');
+      const loadedBackupName = document.getElementById('loadedBackupName');
+      const burgerBtn = document.getElementById('burgerBtn');
+
+      burgerBtn.onclick = () => {
+        setTimeout(() => {
+          const sidebar = document.getElementById('sidebar');
+          if (sidebar.classList.contains('active')) {
+            sidebar.classList.remove('active');
+          } else {
+            sidebar.classList.add('active');
+          }
+        }, 100);
+      };
+
+      let currentSurah = 0;
+      let currentAyah = 0;
+
+      let segData = {};
+
+      function fetchLangFiles() {
+        defaultLangs.forEach(lang => {
+          fetch(lang.file)
+            .then(res => res.json())
+            .then(data => {
+              languages[lang.code] = { ...lang, data, segments: [] };
+              if (Object.values(languages).every(l => l.data)) refreshSidebar();
+            })
+            .catch(() => console.error(`Erreur lors du chargement de ${lang.file}`));
+        });
+      }
+
+      function updateProgressBar() {
+        let totalSegments = 0;
+        let validSegments = 0;
+
+        Object.values(languages).forEach(lang => {
+          if (lang.code === 'vo' || lang.code === 'tr') {
+            lang.data.forEach(surah => {
+              surah.ayahs.forEach(ayah => {
+                const id = `s${surah.index}_a${ayah.index}`;
+                const segs = segData[id]?.[lang.code]?.text ? Object.values(segData[id][lang.code].text) : [ayah.text];
+                segs.forEach(seg => {
+                  totalSegments++;
+                  if (seg.length <= 80) validSegments++;
+                });
+              });
+            });
+          }
+        });
+
+        const percent = totalSegments === 0 ? 0 : Math.round((validSegments / totalSegments) * 100);
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+
+        if (progressBar && progressText) {
+          progressBar.style.width = percent + '%';
+          progressText.textContent = `Segments valides : ${percent}%`;
+          if (percent < 100) {
+            progressBar.style.background = '#e74c3c'; // rouge si pas complet
+            progressText.style.color = '#e74c3c';
+          } else {
+            progressBar.style.background = '#27ae60'; // vert si ok
+            progressText.style.color = '#27ae60';
+          }
+        }
+      }
+
+      function refreshSidebar(targetId = null) {
+        if (targetId) {
+          const match = targetId.match(/^s(\d+)_a(\d+)$/);
+          if (!match) return;
+          const [, s, a] = match;
+          const sIdx = parseInt(s, 10);
+          const aIdx = parseInt(a, 10);
+
+          const langWithData = Object.values(languages)[0];
+          const surah = langWithData.data.find(s => s.index === sIdx);
+          const ayah = surah?.ayahs.find(a => a.index === aIdx);
+
+          const div = document.getElementById(targetId);
+          if (!div) return;
+
+          let hasIssue = false;
+          ['vo', 'tr'].forEach(code => {
+            const lang = languages[code];
+            const langAyah = lang?.data[sIdx]?.ayahs[aIdx];
+            const seg = segData[targetId]?.[code]?.text;
+            const segments = seg ? Object.values(seg) : [langAyah?.text || ''];
+            if (segments.some(s => s.length > 80)) {
+              hasIssue = true;
+            }
+          });
+
+          div.textContent = `${surah.name_trans || surah.name || 'S' + surah.index} ${ayah.index}`;
+          if (hasIssue) {
+            div.textContent += ' ⚠️';
+            div.style.color = 'red';
+          } else {
+            div.style.color = '';
+          }
+
+          div.onclick = () => selectAyah(sIdx - 1, aIdx - 1);
+          return;
+        }
+
+        // Si pas de targetId, rafraîchit tout
+        sidebar.innerHTML = '';
+        const langWithData = Object.values(languages)[0];
+
+        langWithData.data.forEach((surah, sIdx) => {
+          surah.ayahs.forEach((ayah, aIdx) => {
+            const id = `s${surah.index}_a${ayah.index}`;
+            const div = document.createElement('div');
+            div.className = 'ayah-item';
+            div.id = id; // Utilise l'ID pour le suivi
+
+            let hasIssue = false;
+
+            ['vo', 'tr'].forEach(code => {
+              const lang = languages[code];
+              const langAyah = lang?.data[sIdx]?.ayahs[aIdx];
+              const seg = segData[id]?.[code]?.text;
+              const segments = seg ? Object.values(seg) : [langAyah?.text || ''];
+
+              if (segments.some(s => s.length > 80)) {
+                hasIssue = true;
+              }
+            });
+
+            div.textContent = `${surah.name_trans || surah.name || 'S' + surah.index} ${ayah.index}`;
+            if (hasIssue) {
+              div.textContent += ' ⚠️';
+              div.style.color = 'red';
+            }
+
+            div.onclick = () => selectAyah(sIdx, aIdx);
+            sidebar.appendChild(div);
+          });
+        });
+
+        status.textContent = 'Prêt à segmenter';
+      }
+
+      function selectAyah(s, a) {
+        currentSurah = s;
+        currentAyah = a;
+
+        const surah = languages['vo'].data[s];
+        const ayah = surah.ayahs[a];
+        ayahTitle.textContent = `${surah.name_trans || surah.name || 'S' + surah.index} ${ayah.index}`;
+
+        for (const langCode in languages) {
+          const lang = languages[langCode];
+          const langAyah = lang.data[s]?.ayahs[a];
+          const id = `s${surah.index}_a${ayah.index}`;
+          lang.segments = segData[id]?.[langCode]?.text ? Object.values(segData[id][langCode].text) : [langAyah.text].flat();
+        }
+
+        highlightSelectedAyah();
+        refreshTextsUI();
+        sidebar.classList.remove('active');
+      }
+
+      function highlightSelectedAyah() {
+        document.querySelectorAll('.ayah-item').forEach(e => e.classList.remove('selected'));
+        const lang = languages['vo'];
+        let idx = 0;
+        for (let i = 0; i < currentSurah; i++) idx += lang.data[i].ayahs.length;
+        idx += currentAyah;
+        document.querySelectorAll('.ayah-item')[idx]?.classList.add('selected');
+      }
+
+      function refreshTextsUI() {
+        textsContainer.innerHTML = '';
+        let warningFound = false;
+        const orderedLangCodes = ['vo', 'tr'];
+
+        const otherLangCodes = Object.keys(languages).filter(
+          code => !orderedLangCodes.includes(code)
+        );
+        const allLangCodesOrdered = orderedLangCodes.concat(otherLangCodes);
+
+        allLangCodesOrdered.forEach(langCode => {
+          const lang = languages[langCode];
+          const container = document.createElement('div');
+          container.className = 'text-box';
+          const label = document.createElement('label');
+          label.textContent = lang.name;
+          container.appendChild(label);
+
+          lang.segments.forEach((seg, segIndex) => {
+            const words = seg.split(' ');
+            const segmentLength = seg.length;
+
+            // Vérifie si le segment dépasse 80 caractères, seulement pour vo et tr
+            const isTooLong = segmentLength > 80 && (langCode === 'vo' || langCode === 'tr');
+            if (isTooLong) warningFound = true;
+
+            words.forEach((word, wIdx) => {
+              const span = document.createElement('span');
+              span.className = 'word';
+              span.textContent = word;
+              span.style.cursor = 'pointer';
+              span.onclick = () => {
+                const allWords = seg.split(' ');
+                const part1 = allWords.slice(0, wIdx + 1).join(' ');
+                const part2 = allWords.slice(wIdx + 1).join(' ');
+                if (!part2.trim()) return;
+                lang.segments.splice(segIndex, 1, part1, part2);
+                autoSave();
+                refreshTextsUI();
+              };
+
+              if (isTooLong) span.style.backgroundColor = '#ffe5e5'; // rouge clair
+              container.appendChild(span);
+              if (wIdx < words.length - 1) container.appendChild(document.createTextNode(' '));
+            });
+
+            if (segIndex < lang.segments.length - 1) {
+              const cut = document.createElement('span');
+              cut.className = 'cut-marker';
+              cut.onclick = () => {
+                lang.segments[segIndex] += ' ' + lang.segments[segIndex + 1];
+                lang.segments.splice(segIndex + 1, 1);
+                autoSave();
+                refreshTextsUI();
+              };
+              container.appendChild(cut);
+            }
+          });
+
+          textsContainer.appendChild(container);
+        });
+
+        if (warningFound) {
+          status.textContent = '⚠️ Des segments TR ou VO dépassent 80 caractères !';
+          status.style.color = 'red';
+        } else {
+          status.textContent = 'Prêt à segmenter';
+          status.style.color = '';
+        }
+
+        updateProgressBar();
+      }
+
+      function autoSave() {
+        const surah = languages['vo'].data[currentSurah];
+        const ayah = surah.ayahs[currentAyah];
+        const id = `s${surah.index}_a${ayah.index}`;
+        segData[id] = {};
+
+        for (const langCode in languages) {
+          const lang = languages[langCode];
+          segData[id][langCode] = {
+            text: lang.segments.reduce((acc, seg, idx) => {
+              acc[(idx + 1).toString()] = seg;
+              refreshSidebar(id)
+              return acc;
+            }, {})
+          };
+        }
+        status.textContent = `Segmentation sauvegardée pour ${id}`;
+      }
+
+      exportBackupBtn.onclick = () => downloadJSON(segData, 'segmentation_backup.json');
+
+      exportSegOnlyBtn.onclick = () => {
+        Object.values(languages).forEach(lang => {
+          const cloned = JSON.parse(JSON.stringify(lang.data));
+          cloned.forEach(surah => {
+            surah.ayahs.forEach(ayah => {
+              const id = `s${surah.index}_a${ayah.index}`;
+              if (segData[id]?.[lang.code]?.text) {
+                ayah.text = { ...segData[id][lang.code].text };
+              }
+              else {
+                // Sinon, on convertit le texte string en objet segmenté à clé "1"
+                if (typeof ayah.text === "string") {
+                  ayah.text = { "1": ayah.text };
+                }
+                // Si ayah.text est déjà un objet, on laisse tel quel
+              }
+            });
+          });
+          downloadJSON(cloned, `segmented_${lang.code}.json`);
+        });
+      };
+
+      backupInput.onchange = e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        loadedBackupName.textContent = `Backup chargée: ${file.name}`;
+        const reader = new FileReader();
+        reader.onload = evt => {
+          try {
+            const data = JSON.parse(evt.target.result);
+            segData = data;
+            status.textContent = 'Backup chargée';
+            refreshSidebar();
+            selectAyah(currentSurah, currentAyah);
+          } catch (err) {
+            alert('Erreur: Fichier backup invalide.');
+          }
+        };
+        reader.readAsText(file);
+      };
+
+      function downloadJSON(data, filename) {
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      fetchLangFiles();
+    })();
+  </script>
+
+</body>
+</html>
